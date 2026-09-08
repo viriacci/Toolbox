@@ -23,7 +23,7 @@ import (
 )
 
 const marker = "INSOFTWARE_NETWORK_HOST_V34"
-const hostBuild = "34.2-child-from-create"
+const hostBuild = "34.4-child-hwnd"
 
 var (
     user32                 = syscall.NewLazyDLL("user32.dll")
@@ -37,6 +37,8 @@ var (
     procGetWindowTextW     = user32.NewProc("GetWindowTextW")
     procRedrawWindow       = user32.NewProc("RedrawWindow")
     procUpdateWindow       = user32.NewProc("UpdateWindow")
+    procCreateWindowExW    = user32.NewProc("CreateWindowExW")
+    procDestroyWindow      = user32.NewProc("DestroyWindow")
 )
 
 const (
@@ -47,6 +49,9 @@ const (
     rdwInvalidate = 0x0001
     rdwAllChildren = 0x0080
     rdwUpdateNow = 0x0100
+    wsChild = 0x40000000
+    wsClipSiblings = 0x04000000
+    wsClipChildren = 0x02000000
 )
 
 type hostState struct {
@@ -62,6 +67,7 @@ type hostState struct {
     CanGoBack       bool   `json:"canGoBack"`
     CanGoForward    bool   `json:"canGoForward"`
     Error           string `json:"error"`
+    HostPID         int    `json:"hostPid"`
     ParentPID       int    `json:"parentPid"`
     ParentHWND      string `json:"parentHwnd"`
     WindowHWND      string `json:"windowHwnd"`
@@ -102,12 +108,22 @@ func windowTitle(hwnd uintptr) string { buf:=make([]uint16,512); n,_,_:=procGetW
 func findWindowByPID(pid uint32) uintptr { var found uintptr; cb:=syscall.NewCallback(func(hwnd,lparam uintptr) uintptr { var wp uint32; _,_,_=procGetWindowThreadPID.Call(hwnd,uintptr(unsafe.Pointer(&wp))); if wp!=pid{return 1}; visible,_,_:=procIsWindowVisible.Call(hwnd); if visible==0{return 1}; found=hwnd; return 0 }); _,_,_=procEnumWindows.Call(cb,0); return found }
 func waitForWindow(pid uint32,timeout time.Duration) uintptr { deadline:=time.Now().Add(timeout); for time.Now().Before(deadline){ if hwnd:=findWindowByPID(pid); hwnd!=0{return hwnd}; time.Sleep(120*time.Millisecond) }; return 0 }
 
-func moveChild(hwnd uintptr,x,y,width,height int,show bool){
+func createChildWindow(parent uintptr) (uintptr,error) {
+    className,_:=syscall.UTF16PtrFromString("STATIC")
+    title,_:=syscall.UTF16PtrFromString("")
+    hwnd,_,callErr:=procCreateWindowExW.Call(0,uintptr(unsafe.Pointer(className)),uintptr(unsafe.Pointer(title)),wsChild|wsClipSiblings|wsClipChildren,0,0,2,2,parent,0,0,0)
+    if hwnd==0 { return 0,fmt.Errorf("CreateWindowExW child: %v",callErr) }
+    _,_,_=procShowWindow.Call(hwnd,swHide)
+    return hwnd,nil
+}
+
+func moveChild(c *controller,x,y,width,height int,show bool){
     if width<2{width=2}; if height<2{height=2}
-    _,_,_=procSetWindowPos.Call(hwnd,0,uintptr(x),uintptr(y),uintptr(width),uintptr(height),swpNoZOrder|swpNoActivate)
-    _,_,_=procRedrawWindow.Call(hwnd,0,0,rdwInvalidate|rdwAllChildren|rdwUpdateNow)
-    _,_,_=procUpdateWindow.Call(hwnd)
-    if show { _,_,_=procShowWindow.Call(hwnd,swShow); _,_,_=procSetFocus.Call(hwnd) }
+    _,_,_=procSetWindowPos.Call(c.hwnd,0,uintptr(x),uintptr(y),uintptr(width),uintptr(height),swpNoZOrder|swpNoActivate)
+    if c.w!=nil { c.w.Resize() }
+    _,_,_=procRedrawWindow.Call(c.hwnd,0,0,rdwInvalidate|rdwAllChildren|rdwUpdateNow)
+    _,_,_=procUpdateWindow.Call(c.hwnd)
+    if show { _,_,_=procShowWindow.Call(c.hwnd,swShow); _,_,_=procSetFocus.Call(c.hwnd) }
 }
 func openExternal(url string) error { url=strings.TrimSpace(url); if url==""{return fmt.Errorf("brak adresu")}; return exec.Command("rundll32.exe","url.dll,FileProtocolHandler",url).Start() }
 
@@ -120,7 +136,7 @@ func (c *controller) handlers() http.Handler {
         q:=r.URL.Query(); url:=strings.TrimSpace(q.Get("url")); home:=strings.TrimSpace(q.Get("home")); x,y:=intQuery(r,"x",0),intQuery(r,"y",0); width,height:=intQuery(r,"w",2),intQuery(r,"h",2)
         if url=="" {jsonWrite(w,400,map[string]any{"ok":false,"error":"brak url"}); return}
         err:=c.runUI(4*time.Second,func() error{
-            moveChild(c.hwnd,x,y,width,height,true)
+            moveChild(c,x,y,width,height,true)
             c.mutate(func(s *hostState){s.Visible=true;s.RequestedURL=url;if home!=""{s.Home=home}else if s.Home==""{s.Home=url};s.Loading=true;s.LastAction="show";s.Error="";s.NavigationCount++})
             c.w.Navigate(url)
             return nil
@@ -157,18 +173,27 @@ func main(){
     runtime.LockOSThread()
     parentPID:=flag.Int("parent-pid",0,"PID głównego Toolboxa");port:=flag.Int("port",53434,"port lokalnego API");flag.Parse()
     local:=strings.TrimSpace(os.Getenv("LOCALAPPDATA"));if local==""{local=os.TempDir()};base:=filepath.Join(local,"INSOFTWARE SU Toolbox");_=os.MkdirAll(filepath.Join(base,"Logs"),0755);_=os.MkdirAll(filepath.Join(base,"NetworkWebView2Profile"),0755)
-    logFile,_:=os.OpenFile(filepath.Join(base,"Logs","networkhost-v34.log"),os.O_CREATE|os.O_WRONLY|os.O_APPEND,0644);logger:=log.New(logFile,"",log.LstdFlags|log.Lmicroseconds);logger.Printf("=== START %s build=%s parentPID=%d port=%d ===",marker,hostBuild,*parentPID,*port)
-    c:=&controller{log:logger};c.state=hostState{Marker:marker,HostBuild:hostBuild,WindowMode:"native-child-before-webview2",ParentPID:*parentPID,Port:*port}
+    logFile,_:=os.OpenFile(filepath.Join(base,"Logs","networkhost-v34.log"),os.O_CREATE|os.O_WRONLY|os.O_APPEND,0644);logger:=log.New(logFile,"",log.LstdFlags|log.Lmicroseconds);logger.Printf("=== START %s build=%s pid=%d parentPID=%d port=%d ===",marker,hostBuild,os.Getpid(),*parentPID,*port)
+    c:=&controller{log:logger};c.state=hostState{Marker:marker,HostBuild:hostBuild,WindowMode:"explicit-static-child-hwnd",HostPID:os.Getpid(),ParentPID:*parentPID,Port:*port}
     srv:=&http.Server{Addr:fmt.Sprintf("127.0.0.1:%d",*port),Handler:c.handlers(),ReadHeaderTimeout:3*time.Second};go func(){logger.Printf("HTTP listening on %s",srv.Addr);if err:=srv.ListenAndServe();err!=nil&&err!=http.ErrServerClosed{logger.Printf("HTTP ERROR: %v",err)}}()
     if *parentPID<=0{c.setError(fmt.Errorf("brak poprawnego --parent-pid"));time.Sleep(2*time.Second);return}
     parent:=waitForWindow(uint32(*parentPID),20*time.Second);if parent==0{c.setError(fmt.Errorf("nie znaleziono okna procesu PID %d",*parentPID));time.Sleep(2*time.Second);return};logger.Printf("parent hwnd=0x%X title=%q",parent,windowTitle(parent));c.parent=parent;c.mutate(func(s *hostState){s.ParentHWND=fmt.Sprintf("0x%X",parent)})
+
+    child,err:=createChildWindow(parent)
+    if err!=nil { c.setError(err); time.Sleep(2*time.Second); return }
+    c.hwnd=child
+    c.mutate(func(s *hostState){s.WindowHWND=fmt.Sprintf("0x%X",child)})
+    logger.Printf("created explicit child hwnd=0x%X parent=0x%X",child,parent)
+
     dataPath:=filepath.Join(base,"NetworkWebView2Profile")
-    w:=webview2.NewWithOptions(webview2.WebViewOptions{Window:unsafe.Pointer(parent),Debug:false,AutoFocus:true,DataPath:dataPath,WindowOptions:webview2.WindowOptions{Title:"INSOFTWARE Network Host",Width:2,Height:2}})
-    if w==nil{c.setError(fmt.Errorf("go-webview2 zwrócił nil przy tworzeniu natywnego child WebView2"));time.Sleep(2*time.Second);return};defer w.Destroy()
-    hwnd:=uintptr(w.Window());c.hwnd=hwnd;c.mu.Lock();c.w=w;c.state.WindowHWND=fmt.Sprintf("0x%X",hwnd);c.mu.Unlock();_,_,_=procShowWindow.Call(hwnd,swHide)
+    w:=webview2.NewWithOptions(webview2.WebViewOptions{Window:unsafe.Pointer(child),Debug:false,AutoFocus:true,DataPath:dataPath})
+    if w==nil{c.setError(fmt.Errorf("go-webview2 zwrócił nil przy osadzaniu w child HWND 0x%X",child));_,_,_=procDestroyWindow.Call(child);time.Sleep(2*time.Second);return}
+    defer w.Destroy()
+    c.mu.Lock();c.w=w;c.mu.Unlock();w.Resize();_,_,_=procShowWindow.Call(child,swHide)
+
     if err:=w.Bind("__toolboxReportLocation",func(url string){url=strings.TrimSpace(url);if url==""||url=="about:blank"{return};c.mutate(func(s *hostState){s.Source=url;s.Loading=false;s.CanGoBack=s.NavigationCount>1;s.CanGoForward=true;s.Error=""});logger.Printf("source=%s",url)});err!=nil{c.setError(fmt.Errorf("Bind source callback: %w",err));return}
     w.Init(`(()=>{const report=()=>{try{window.__toolboxReportLocation(String(location.href)).catch(()=>{})}catch{}};addEventListener('DOMContentLoaded',report);addEventListener('load',report);addEventListener('pageshow',report);addEventListener('popstate',report);addEventListener('hashchange',report);setInterval(report,700);report()})()`)
-    c.mutate(func(s *hostState){s.Ready=true;s.LastAction="ready";s.Error=""});logger.Printf("WebView ready child hwnd=0x%X parent=0x%X",hwnd,parent)
+    c.mutate(func(s *hostState){s.Ready=true;s.LastAction="ready";s.Error=""});logger.Printf("WebView ready embedded hwnd=0x%X parent=0x%X",child,parent)
     go func(){ticker:=time.NewTicker(time.Second);defer ticker.Stop();for range ticker.C{ok,_,_:=procIsWindow.Call(parent);if ok==0{logger.Printf("parent window disappeared; terminating");w.Terminate();return}}}()
     w.Run();logger.Printf("=== STOP %s build=%s ===",marker,hostBuild)
 }
