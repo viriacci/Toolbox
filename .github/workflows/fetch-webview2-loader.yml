@@ -1,0 +1,30 @@
+name: Fetch WebView2Loader x64
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fetch-webview2-loader.yml'
+  workflow_dispatch:
+
+jobs:
+  fetch-loader:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download x64 WebView2Loader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          curl -L --fail --retry 3 \
+            https://raw.githubusercontent.com/jchv/go-webview2/master/webviewloader/sdk/x64/WebView2Loader.dll \
+            -o artifact/WebView2Loader.dll
+          file artifact/WebView2Loader.dll
+          sha256sum artifact/WebView2Loader.dll | tee artifact/SHA256.txt
+          test "$(head -c 2 artifact/WebView2Loader.dll)" = 'MZ'
+
+      - name: Upload loader
+        uses: actions/upload-artifact@v4
+        with:
+          name: webview2-loader-x64
+          path: artifact/
+          if-no-files-found: error
