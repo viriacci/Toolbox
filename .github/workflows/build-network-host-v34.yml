@@ -21,6 +21,12 @@ jobs:
           go-version: '1.25.x'
           cache-dependency-path: networkhost/go.sum
 
+      - name: Decode V34.9 source
+        shell: pwsh
+        run: |
+          python -c "import gzip,base64,pathlib; p=pathlib.Path('main_v349.go.gz.b64'); pathlib.Path('main_v349.go').write_bytes(gzip.decompress(base64.b64decode(p.read_text().strip())))"
+          gofmt -w .\main_v349.go
+
       - name: Resolve pinned dependency
         shell: pwsh
         run: |
@@ -40,13 +46,13 @@ jobs:
           python .\patch_v348_webview.py $modDir
           gofmt -w (Join-Path $modDir 'common.go') (Join-Path $modDir 'webview.go') (Join-Path $modDir 'pkg\edge\chromium.go') (Join-Path $modDir 'pkg\edge\ICoreWebView2Controller.go') (Join-Path $modDir 'pkg\edge\ICoreWebView2NavigationCompletedEventArgs.go')
 
-      - name: Build V34.8 x64 helper
+      - name: Build V34.9 x64 helper
         shell: pwsh
         run: |
           $env:GOOS='windows'
           $env:GOARCH='amd64'
           $env:CGO_ENABLED='0'
-          go build -trimpath -ldflags '-H=windowsgui -s -w' -o ToolboxNetworkHost.exe .\main_v348.go
+          go build -trimpath -ldflags '-H=windowsgui -s -w' -o ToolboxNetworkHost.exe .\main_v349.go
 
       - name: Verify binary
         shell: pwsh
@@ -55,7 +61,7 @@ jobs:
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path .\ToolboxNetworkHost.exe))
           if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Niepoprawny nagłówek PE' }
           $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
-          foreach ($marker in @('34.8-controller-sync','owned-popup-controller-sync','controllerBounds','navigationCompletedAt','webviewPinnedCommit','clear-session')) {
+          foreach ($marker in @('34.9-multitab-media','owned-popup-multitab','/tab/mute','/tab/pip','documentPictureInPicture','mediaPlaying','clear-session')) {
             if ($ascii -notmatch [regex]::Escape($marker)) { throw "Brak markera $marker" }
           }
           Get-FileHash .\ToolboxNetworkHost.exe -Algorithm SHA256 | Format-List
@@ -63,6 +69,6 @@ jobs:
       - name: Upload helper
         uses: actions/upload-artifact@v4
         with:
-          name: ToolboxNetworkHost-v34.8-x64
+          name: ToolboxNetworkHost-v34.9-x64
           path: networkhost/ToolboxNetworkHost.exe
           if-no-files-found: error
