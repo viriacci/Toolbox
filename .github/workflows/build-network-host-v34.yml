@@ -21,17 +21,19 @@ jobs:
           go-version: '1.25.x'
           cache-dependency-path: networkhost/go.sum
 
-      - name: Resolve pinned dependencies
+      - name: Resolve dependencies
         shell: pwsh
         run: |
-          go get github.com/jchv/go-webview2@169f33caa281
+          go get github.com/jchv/go-webview2@master
           go mod tidy
 
-      - name: Patch WebView2 host creation
+      - name: Stamp V34.3 session host
         shell: pwsh
         run: |
-          $env:GOMODCACHE = (go env GOMODCACHE)
-          python .\patch_webview2_child.py
+          $src = Get-Content .\main.go -Raw
+          $src = $src.Replace('34.2-child-from-create', '34.3-session-host')
+          Set-Content .\main.go -Value $src -Encoding UTF8
+          if ((Get-Content .\main.go -Raw) -notmatch '34.3-session-host') { throw 'Nie udało się ustawić hostBuild V34.3' }
 
       - name: Build x64 helper
         shell: pwsh
@@ -47,11 +49,13 @@ jobs:
           if (!(Test-Path .\ToolboxNetworkHost.exe)) { throw 'Brak ToolboxNetworkHost.exe' }
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path .\ToolboxNetworkHost.exe))
           if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Niepoprawny nagłówek PE' }
+          $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+          if ($ascii -notmatch '34.3-session-host') { throw 'Brak markera hostBuild 34.3' }
           Get-FileHash .\ToolboxNetworkHost.exe -Algorithm SHA256 | Format-List
 
       - name: Upload helper
         uses: actions/upload-artifact@v4
         with:
-          name: ToolboxNetworkHost-v34.2-x64
+          name: ToolboxNetworkHost-v34.3-x64
           path: networkhost/ToolboxNetworkHost.exe
           if-no-files-found: error
