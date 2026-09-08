@@ -27,29 +27,13 @@ jobs:
           go get github.com/jchv/go-webview2@master
           go mod tidy
 
-      - name: Patch go-webview2 existing HWND support
-        shell: pwsh
-        run: |
-          $modDir = (go list -m -f '{{.Dir}}' github.com/jchv/go-webview2).Trim()
-          if (!(Test-Path $modDir)) { throw "Nie znaleziono modułu go-webview2: $modDir" }
-          attrib -R (Join-Path $modDir 'common.go')
-          attrib -R (Join-Path $modDir 'webview.go')
-          python .\patch_webview.py $modDir
-          gofmt -w (Join-Path $modDir 'common.go') (Join-Path $modDir 'webview.go')
-
-      - name: Patch V34.5 z-order host
-        shell: pwsh
-        run: |
-          python .\patch_v345.py
-          gofmt -w .\main.go
-
-      - name: Build x64 helper
+      - name: Build V34.6 x64 helper
         shell: pwsh
         run: |
           $env:GOOS='windows'
           $env:GOARCH='amd64'
           $env:CGO_ENABLED='0'
-          go build -trimpath -ldflags '-H=windowsgui -s -w' -o ToolboxNetworkHost.exe .
+          go build -trimpath -ldflags '-H=windowsgui -s -w' -o ToolboxNetworkHost.exe .\main_v346.go
 
       - name: Verify binary
         shell: pwsh
@@ -58,13 +42,13 @@ jobs:
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path .\ToolboxNetworkHost.exe))
           if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Niepoprawny nagłówek PE' }
           $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
-          if ($ascii -notmatch '34.5-zorder-top') { throw 'Brak markera hostBuild 34.5' }
-          if ($ascii -notmatch 'explicit-static-child-hwnd-zorder-top') { throw 'Brak markera trybu z-order' }
+          if ($ascii -notmatch '34.6-owned-overlay') { throw 'Brak markera hostBuild 34.6' }
+          if ($ascii -notmatch 'owned-popup-overlay') { throw 'Brak markera trybu owned overlay' }
           Get-FileHash .\ToolboxNetworkHost.exe -Algorithm SHA256 | Format-List
 
       - name: Upload helper
         uses: actions/upload-artifact@v4
         with:
-          name: ToolboxNetworkHost-v34.5-x64
+          name: ToolboxNetworkHost-v34.6-x64
           path: networkhost/ToolboxNetworkHost.exe
           if-no-files-found: error
