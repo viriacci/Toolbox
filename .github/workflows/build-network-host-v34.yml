@@ -37,6 +37,12 @@ jobs:
           python .\patch_webview.py $modDir
           gofmt -w (Join-Path $modDir 'common.go') (Join-Path $modDir 'webview.go')
 
+      - name: Patch V34.5 z-order host
+        shell: pwsh
+        run: |
+          python .\patch_v345.py
+          gofmt -w .\main.go
+
       - name: Build x64 helper
         shell: pwsh
         run: |
@@ -52,13 +58,13 @@ jobs:
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path .\ToolboxNetworkHost.exe))
           if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Niepoprawny nagłówek PE' }
           $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
-          if ($ascii -notmatch '34.4-child-hwnd') { throw 'Brak markera hostBuild 34.4' }
-          if ($ascii -notmatch 'explicit-static-child-hwnd') { throw 'Brak markera trybu child HWND' }
+          if ($ascii -notmatch '34.5-zorder-top') { throw 'Brak markera hostBuild 34.5' }
+          if ($ascii -notmatch 'explicit-static-child-hwnd-zorder-top') { throw 'Brak markera trybu z-order' }
           Get-FileHash .\ToolboxNetworkHost.exe -Algorithm SHA256 | Format-List
 
       - name: Upload helper
         uses: actions/upload-artifact@v4
         with:
-          name: ToolboxNetworkHost-v34.4-x64
+          name: ToolboxNetworkHost-v34.5-x64
           path: networkhost/ToolboxNetworkHost.exe
           if-no-files-found: error
