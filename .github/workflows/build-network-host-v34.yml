@@ -21,19 +21,32 @@ jobs:
           go-version: '1.25.x'
           cache-dependency-path: networkhost/go.sum
 
-      - name: Resolve dependencies
+      - name: Resolve pinned dependency
         shell: pwsh
         run: |
-          go get github.com/jchv/go-webview2@master
+          go get github.com/jchv/go-webview2@56598839c808a2340edee99204db479f410e9bf4
           go mod tidy
 
-      - name: Build V34.6 x64 helper
+      - name: Patch WebView2 controller APIs
+        shell: pwsh
+        run: |
+          $modDir = (go list -m -f '{{.Dir}}' github.com/jchv/go-webview2).Trim()
+          if (!(Test-Path $modDir)) { throw "Nie znaleziono modułu go-webview2: $modDir" }
+          attrib -R (Join-Path $modDir 'common.go')
+          attrib -R (Join-Path $modDir 'webview.go')
+          attrib -R (Join-Path $modDir 'pkg\edge\chromium.go')
+          attrib -R (Join-Path $modDir 'pkg\edge\ICoreWebView2Controller.go')
+          attrib -R (Join-Path $modDir 'pkg\edge\ICoreWebView2NavigationCompletedEventArgs.go')
+          python .\patch_v348_webview.py $modDir
+          gofmt -w (Join-Path $modDir 'common.go') (Join-Path $modDir 'webview.go') (Join-Path $modDir 'pkg\edge\chromium.go') (Join-Path $modDir 'pkg\edge\ICoreWebView2Controller.go') (Join-Path $modDir 'pkg\edge\ICoreWebView2NavigationCompletedEventArgs.go')
+
+      - name: Build V34.8 x64 helper
         shell: pwsh
         run: |
           $env:GOOS='windows'
           $env:GOARCH='amd64'
           $env:CGO_ENABLED='0'
-          go build -trimpath -ldflags '-H=windowsgui -s -w' -o ToolboxNetworkHost.exe .\main_v346.go
+          go build -trimpath -ldflags '-H=windowsgui -s -w' -o ToolboxNetworkHost.exe .\main_v348.go
 
       - name: Verify binary
         shell: pwsh
@@ -42,13 +55,14 @@ jobs:
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path .\ToolboxNetworkHost.exe))
           if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Niepoprawny nagłówek PE' }
           $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
-          if ($ascii -notmatch '34.6-owned-overlay') { throw 'Brak markera hostBuild 34.6' }
-          if ($ascii -notmatch 'owned-popup-overlay') { throw 'Brak markera trybu owned overlay' }
+          foreach ($marker in @('34.8-controller-sync','owned-popup-controller-sync','controllerBounds','navigationCompletedAt','webviewPinnedCommit','clear-session')) {
+            if ($ascii -notmatch [regex]::Escape($marker)) { throw "Brak markera $marker" }
+          }
           Get-FileHash .\ToolboxNetworkHost.exe -Algorithm SHA256 | Format-List
 
       - name: Upload helper
         uses: actions/upload-artifact@v4
         with:
-          name: ToolboxNetworkHost-v34.6-x64
+          name: ToolboxNetworkHost-v34.8-x64
           path: networkhost/ToolboxNetworkHost.exe
           if-no-files-found: error
