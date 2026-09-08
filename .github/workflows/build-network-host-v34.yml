@@ -32,57 +32,10 @@ jobs:
         run: |
           $modDir = (go list -m -f '{{.Dir}}' github.com/jchv/go-webview2).Trim()
           if (!(Test-Path $modDir)) { throw "Nie znaleziono modułu go-webview2: $modDir" }
-          Write-Host "Patching $modDir"
-
-          $commonPath = Join-Path $modDir 'common.go'
-          $webviewPath = Join-Path $modDir 'webview.go'
-          attrib -R $commonPath
-          attrib -R $webviewPath
-
-          $common = Get-Content $commonPath -Raw
-          if ($common -notmatch '(?m)^\s*Resize\(\)\s*$') {
-            $common = [regex]::Replace(
-              $common,
-              '(?m)^(\s*Window\(\) unsafe\.Pointer\s*)$',
-              '$1' + "`n`n`t// Resize synchronizes the WebView2 controller bounds with the existing HWND.`n`tResize()",
-              1
-            )
-          }
-          Set-Content $commonPath -Value $common -Encoding UTF8
-
-          $wv = Get-Content $webviewPath -Raw
-          $pattern = 'if !w\.CreateWithOptions\(options\.WindowOptions\) \{\s*return nil\s*\}'
-          if ($wv -notmatch $pattern) { throw 'Nie znaleziono bloku CreateWithOptions do patchowania' }
-          $replacement = @'
-if options.Window != nil {
-		w.hwnd = uintptr(options.Window)
-		if !w.browser.Embed(w.hwnd) {
-			return nil
-		}
-		w.browser.Resize()
-	} else if !w.CreateWithOptions(options.WindowOptions) {
-		return nil
-	}
-'@
-          $wv = [regex]::Replace($wv, $pattern, $replacement, 1)
-
-          if ($wv -notmatch 'func \(w \*webview\) Resize\(\)') {
-            $resizeMethod = @'
-func (w *webview) Resize() {
-	w.browser.Resize()
-}
-
-'@
-            $wv = $wv.Replace('func (w *webview) Destroy() {', $resizeMethod + 'func (w *webview) Destroy() {')
-          }
-          Set-Content $webviewPath -Value $wv -Encoding UTF8
-
-          gofmt -w $commonPath $webviewPath
-          $checkCommon = Get-Content $commonPath -Raw
-          $checkWv = Get-Content $webviewPath -Raw
-          if ($checkCommon -notmatch 'Resize\(\)') { throw 'Brak Resize() w interfejsie WebView' }
-          if ($checkWv -notmatch 'if options\.Window != nil') { throw 'Patch Window nie został zastosowany' }
-          if ($checkWv -notmatch 'func \(w \*webview\) Resize\(\)') { throw 'Brak implementacji Resize()' }
+          attrib -R (Join-Path $modDir 'common.go')
+          attrib -R (Join-Path $modDir 'webview.go')
+          python .\patch_webview.py $modDir
+          gofmt -w (Join-Path $modDir 'common.go') (Join-Path $modDir 'webview.go')
 
       - name: Build x64 helper
         shell: pwsh
