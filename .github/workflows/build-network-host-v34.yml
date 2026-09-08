@@ -27,13 +27,62 @@ jobs:
           go get github.com/jchv/go-webview2@master
           go mod tidy
 
-      - name: Stamp V34.3 session host
+      - name: Patch go-webview2 existing HWND support
         shell: pwsh
         run: |
-          $src = Get-Content .\main.go -Raw
-          $src = $src.Replace('34.2-child-from-create', '34.3-session-host')
-          Set-Content .\main.go -Value $src -Encoding UTF8
-          if ((Get-Content .\main.go -Raw) -notmatch '34.3-session-host') { throw 'Nie udało się ustawić hostBuild V34.3' }
+          $modDir = (go list -m -f '{{.Dir}}' github.com/jchv/go-webview2).Trim()
+          if (!(Test-Path $modDir)) { throw "Nie znaleziono modułu go-webview2: $modDir" }
+          Write-Host "Patching $modDir"
+
+          $commonPath = Join-Path $modDir 'common.go'
+          $webviewPath = Join-Path $modDir 'webview.go'
+          attrib -R $commonPath
+          attrib -R $webviewPath
+
+          $common = Get-Content $commonPath -Raw
+          if ($common -notmatch '(?m)^\s*Resize\(\)\s*$') {
+            $common = [regex]::Replace(
+              $common,
+              '(?m)^(\s*Window\(\) unsafe\.Pointer\s*)$',
+              '$1' + "`n`n`t// Resize synchronizes the WebView2 controller bounds with the existing HWND.`n`tResize()",
+              1
+            )
+          }
+          Set-Content $commonPath -Value $common -Encoding UTF8
+
+          $wv = Get-Content $webviewPath -Raw
+          $pattern = 'if !w\.CreateWithOptions\(options\.WindowOptions\) \{\s*return nil\s*\}'
+          if ($wv -notmatch $pattern) { throw 'Nie znaleziono bloku CreateWithOptions do patchowania' }
+          $replacement = @'
+if options.Window != nil {
+		w.hwnd = uintptr(options.Window)
+		if !w.browser.Embed(w.hwnd) {
+			return nil
+		}
+		w.browser.Resize()
+	} else if !w.CreateWithOptions(options.WindowOptions) {
+		return nil
+	}
+'@
+          $wv = [regex]::Replace($wv, $pattern, $replacement, 1)
+
+          if ($wv -notmatch 'func \(w \*webview\) Resize\(\)') {
+            $resizeMethod = @'
+func (w *webview) Resize() {
+	w.browser.Resize()
+}
+
+'@
+            $wv = $wv.Replace('func (w *webview) Destroy() {', $resizeMethod + 'func (w *webview) Destroy() {')
+          }
+          Set-Content $webviewPath -Value $wv -Encoding UTF8
+
+          gofmt -w $commonPath $webviewPath
+          $checkCommon = Get-Content $commonPath -Raw
+          $checkWv = Get-Content $webviewPath -Raw
+          if ($checkCommon -notmatch 'Resize\(\)') { throw 'Brak Resize() w interfejsie WebView' }
+          if ($checkWv -notmatch 'if options\.Window != nil') { throw 'Patch Window nie został zastosowany' }
+          if ($checkWv -notmatch 'func \(w \*webview\) Resize\(\)') { throw 'Brak implementacji Resize()' }
 
       - name: Build x64 helper
         shell: pwsh
@@ -50,12 +99,13 @@ jobs:
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path .\ToolboxNetworkHost.exe))
           if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Niepoprawny nagłówek PE' }
           $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
-          if ($ascii -notmatch '34.3-session-host') { throw 'Brak markera hostBuild 34.3' }
+          if ($ascii -notmatch '34.4-child-hwnd') { throw 'Brak markera hostBuild 34.4' }
+          if ($ascii -notmatch 'explicit-static-child-hwnd') { throw 'Brak markera trybu child HWND' }
           Get-FileHash .\ToolboxNetworkHost.exe -Algorithm SHA256 | Format-List
 
       - name: Upload helper
         uses: actions/upload-artifact@v4
         with:
-          name: ToolboxNetworkHost-v34.3-x64
+          name: ToolboxNetworkHost-v34.4-x64
           path: networkhost/ToolboxNetworkHost.exe
           if-no-files-found: error
