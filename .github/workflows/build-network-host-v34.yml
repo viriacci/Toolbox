@@ -30,6 +30,7 @@ jobs:
           git show 529bd6cf77cb2f12d4c215b28dd57b02852ed254:networkhost/main_v349.go.gz.b64 | Out-File -Encoding ascii .\stable_v349.gz.b64
           python -c "import gzip,base64,pathlib; p=pathlib.Path('stable_v349.gz.b64'); pathlib.Path('main_v3493.go').write_bytes(gzip.decompress(base64.b64decode(p.read_text().strip())))"
           python .\patch_v3493.py .\main_v3493.go
+          python .\fix_v3493_tabs.py .\main_v3493.go
           gofmt -w .\main_v3493.go
 
       - name: Resolve pinned dependency
