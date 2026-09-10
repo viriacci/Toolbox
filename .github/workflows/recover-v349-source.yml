@@ -1,0 +1,31 @@
+name: Recover V34.9 source
+
+on:
+  push:
+    paths:
+      - '.github/workflows/recover-v349-source.yml'
+  workflow_dispatch:
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Recover last known-good V34.9 source
+        shell: bash
+        run: |
+          git fetch origin 529bd6cf77cb2f12d4c215b28dd57b02852ed254 --depth=1
+          git show 529bd6cf77cb2f12d4c215b28dd57b02852ed254:networkhost/main_v349.go.gz.b64 > /tmp/main_v349.go.gz.b64
+          python - <<'PY'
+          import gzip,base64,pathlib
+          src = pathlib.Path('/tmp/main_v349.go.gz.b64').read_text().strip()
+          pathlib.Path('/tmp/main_v349.go').write_bytes(gzip.decompress(base64.b64decode(src)))
+          PY
+          grep -n "hostBuild\|type manager\|createTab\|ensureTab\|NewWithOptions\|DataPath\|warm\|preload" /tmp/main_v349.go | head -n 100 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: V34.9-source-recovered
+          path: /tmp/main_v349.go
+          if-no-files-found: error
