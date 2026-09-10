@@ -1,0 +1,75 @@
+name: Build Network Host V35
+
+on:
+  push:
+    paths:
+      - 'networkhost/main_v350.go.gz.b64'
+      - 'networkhost/patch_v348_webview.py'
+      - '.github/workflows/build-network-host-v35.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: networkhost
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache-dependency-path: networkhost/go.sum
+
+      - name: Decode V35 source
+        shell: pwsh
+        run: |
+          python -c "import gzip,base64,pathlib; p=pathlib.Path('main_v350.go.gz.b64'); pathlib.Path('main_v350.go').write_bytes(gzip.decompress(base64.b64decode(p.read_text().strip())))"
+          gofmt -w .\main_v350.go
+
+      - name: Resolve pinned dependency
+        shell: pwsh
+        run: |
+          go get github.com/jchv/go-webview2@56598839c808a2340edee99204db479f410e9bf4
+          go mod tidy
+
+      - name: Patch WebView2 controller APIs
+        shell: pwsh
+        run: |
+          $modDir = (go list -m -f '{{.Dir}}' github.com/jchv/go-webview2).Trim()
+          if (!(Test-Path $modDir)) { throw "Nie znaleziono modułu go-webview2: $modDir" }
+          attrib -R (Join-Path $modDir 'common.go')
+          attrib -R (Join-Path $modDir 'webview.go')
+          attrib -R (Join-Path $modDir 'pkg\edge\chromium.go')
+          attrib -R (Join-Path $modDir 'pkg\edge\ICoreWebView2Controller.go')
+          attrib -R (Join-Path $modDir 'pkg\edge\ICoreWebView2NavigationCompletedEventArgs.go')
+          python .\patch_v348_webview.py $modDir
+          gofmt -w (Join-Path $modDir 'common.go') (Join-Path $modDir 'webview.go') (Join-Path $modDir 'pkg\edge\chromium.go') (Join-Path $modDir 'pkg\edge\ICoreWebView2Controller.go') (Join-Path $modDir 'pkg\edge\ICoreWebView2NavigationCompletedEventArgs.go')
+
+      - name: Build V35 x64 helper
+        shell: pwsh
+        run: |
+          $env:GOOS='windows'
+          $env:GOARCH='amd64'
+          $env:CGO_ENABLED='0'
+          go build -trimpath -ldflags '-H=windowsgui -s -w' -o ToolboxNetworkHost.exe .\main_v350.go
+
+      - name: Verify binary
+        shell: pwsh
+        run: |
+          if (!(Test-Path .\ToolboxNetworkHost.exe)) { throw 'Brak ToolboxNetworkHost.exe' }
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path .\ToolboxNetworkHost.exe))
+          if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Niepoprawny nagłówek PE' }
+          $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($marker in @('INSOFTWARE_NETWORK_HOST_V35','35.0-multitab-theme','owned-popup-multitab-v35','/settings/dark','/toolbox/theme','/tab/preload','/tab/mute','/tab/pip','NetworkDarkMode.flag')) {
+            if ($ascii -notmatch [regex]::Escape($marker)) { throw "Brak markera $marker" }
+          }
+          Get-FileHash .\ToolboxNetworkHost.exe -Algorithm SHA256 | Format-List
+
+      - name: Upload helper
+        uses: actions/upload-artifact@v4
+        with:
+          name: ToolboxNetworkHost-v35.0-x64
+          path: networkhost/ToolboxNetworkHost.exe
+          if-no-files-found: error
